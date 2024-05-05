@@ -1,0 +1,8 @@
+langchain
+openai
+langchain-openai
+pandas
+scipy
+spacy
+matplotlib
+scikit-learn
