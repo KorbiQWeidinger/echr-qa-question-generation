@@ -6,3 +6,4 @@ scipy
 spacy
 matplotlib
 scikit-learn
+fuzzywuzzy
