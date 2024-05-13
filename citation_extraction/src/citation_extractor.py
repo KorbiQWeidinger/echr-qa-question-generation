@@ -10,6 +10,8 @@ from citation_extraction.src.fuzzy_find import fuzzy_find_best, normalize_case_n
 
 nlp = spacy.load("en_core_web_trf")
 
+UNKNOWN_CITATION = "UNKNOWN_CITATION"
+
 
 def get_sentences_spacy(text: str):
     doc = nlp(text)
@@ -27,6 +29,8 @@ class Citation(BaseModel):
     best_match: str
     case_id: str
     paragraph_numbers: list[int]  # paragraph numbers the citation references
+    snippet: str
+    paragraphs: dict[int, str] | None = None
 
 
 class Sentence(BaseModel):
@@ -39,10 +43,14 @@ class CitationNotIdentifiableException(Exception):
         super().__init__(f"Could not identify citation {text}")
 
 
-def print_citation_area(text: str):
+def get_snippet(text: str) -> str:
     i = text.find("v.")
     citation_area = text[max(0, i - 50) : min(i + 50, len(text) - 1)]
-    print("Snippet with case name:", citation_area)
+    return citation_area
+
+
+def print_citation_area(text: str, guide_id: str) -> None:
+    print(f"{guide_id} - Snippet with unidentifiable case name:", get_snippet(text))
 
 
 def clean_text(text: str) -> str:
@@ -58,7 +66,9 @@ def extract_citations(
     possible_citations: dict[str, str],
     last_cited_case: str,
     last_cited_case_id: str,
+    last_cited_case_snippet: str,
     manual_mappings: dict[str, str],
+    guide_id: str,
 ):
     possible_citations.update(manual_mappings)
     sentences = get_sentences_spacy(text)
@@ -91,6 +101,7 @@ def extract_citations(
                             best_match=last_cited_case,
                             case_id=last_cited_case_id,
                             paragraph_numbers=paragraph_numbers,
+                            snippet=get_snippet(original_sentence),
                         )
                     ],
                 )
@@ -108,24 +119,30 @@ def extract_citations(
                     best_match=last_cited_case,
                     case_id=last_cited_case_id,
                     paragraph_numbers=paragraph_numbers,
+                    snippet=last_cited_case_snippet,
                 )
             )
 
         for swc in substrings_with_cases:
             _, best_match, case_name = fuzzy_find_best(swc, possible_citations.keys())
             if case_name is None:
-                print_citation_area(swc)
-                continue
-            case_id = possible_citations[case_name]
+                print_citation_area(swc, guide_id)
+                case_name = UNKNOWN_CITATION
+                best_match = UNKNOWN_CITATION
+                case_id = UNKNOWN_CITATION
+            else:
+                case_id = possible_citations[case_name]
             paragraph_numbers = find_paragraphs(swc.split("v.")[1])
             last_cited_case = case_name
             last_cited_case_id = case_id
+            last_cited_case_snippet = get_snippet(swc)
             citations.append(
                 Citation(
                     case_name=case_name,
                     best_match=best_match,
                     case_id=case_id,
                     paragraph_numbers=paragraph_numbers,
+                    snippet=last_cited_case_snippet,
                 )
             )
         sentences_with_citations.append(
@@ -135,4 +152,9 @@ def extract_citations(
             )
         )
 
-    return sentences_with_citations, last_cited_case, last_cited_case_id
+    return (
+        sentences_with_citations,
+        last_cited_case,
+        last_cited_case_id,
+        last_cited_case_snippet,
+    )
