@@ -1,10 +1,103 @@
+import json
+import re
+import spacy
+import pandas as pd
+from enum import Enum
+from langchain_core.messages import AIMessage
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain.prompts.prompt import PromptTemplate
+from scipy.spatial.distance import cosine
+from fuzzywuzzy import process, fuzz
+import concurrent.futures
+import time
+
+nlp = spacy.load("en_core_web_trf")
+
+
+class Guide(Enum):
+    GUIDE_ART_1_ENG = "guide_art_1_eng"
+    GUIDE_ART_2_ENG = "guide_art_2_eng"
+    GUIDE_ART_3_ENG = "guide_art_3_eng"
+    GUIDE_ART_4_ENG = "guide_art_4_eng"
+    GUIDE_ART_5_ENG = "guide_art_5_eng"
+    GUIDE_ART_6_CIVIL_ENG = "guide_art_6_civil_eng"
+    GUIDE_ART_6_CRIMINAL_ENG = "guide_art_6_criminal_eng"
+    GUIDE_ART_7_ENG = "guide_art_7_eng"
+    GUIDE_ART_8_ENG = "guide_art_8_eng"
+    GUIDE_ART_9_ENG = "guide_art_9_eng"
+    GUIDE_ART_10_ENG = "guide_art_10_eng"
+    GUIDE_ART_11_ENG = "guide_art_11_eng"
+    GUIDE_ART_12_ENG = "guide_art_12_eng"
+    GUIDE_ART_13_ENG = "guide_art_13_eng"
+    GUIDE_ART_14_ART_1_PROTOCOL_12_ENG = "guide_art_14_art_1_protocol_12_eng"
+    GUIDE_ART_15_ENG = "guide_art_15_eng"
+    GUIDE_ART_17_ENG = "guide_art_17_eng"
+    GUIDE_ART_18_ENG = "guide_art_18_eng"
+    ADMISSIBILITY_GUIDE_ENG = "Admissibility_guide_ENG"
+    GUIDE_ART_46_ENG = "guide_art_46_eng"
+    GUIDE_ART_1_PROTOCOL_1_ENG = "guide_art_1_protocol_1_eng"
+    GUIDE_ART_2_PROTOCOL_1_ENG = "guide_art_2_protocol_1_eng"
+    GUIDE_ART_3_PROTOCOL_1_ENG = "guide_art_3_protocol_1_eng"
+    GUIDE_ART_2_PROTOCOL_4_ENG = "guide_art_2_protocol_4_eng"
+    GUIDE_ART_3_PROTOCOL_4_ENG = "guide_art_3_protocol_4_eng"
+    GUIDE_ART_4_PROTOCOL_4_ENG = "guide_art_4_protocol_4_eng"
+    GUIDE_ART_1_PROTOCOL_7_ENG = "guide_art_1_protocol_7_eng"
+    GUIDE_ART_2_PROTOCOL_7_ENG = "guide_art_2_protocol_7_eng"
+    GUIDE_ART_4_PROTOCOL_7_ENG = "guide_art_4_protocol_7_eng"
+    GUIDE_DATA_PROTECTION_ENG = "guide_data_protection_eng"
+    GUIDE_ENVIRONMENT_ENG = "guide_environment_eng"
+    GUIDE_IMMIGRATION_ENG = "guide_immigration_eng"
+    GUIDE_MASS_PROTESTS_ENG = "guide_mass_protests_eng"
+    GUIDE_PRISONERS_RIGHTS_ENG = "guide_prisoners_rights_eng"
+    GUIDE_LGBTI_RIGHTS_ENG = "guide_lgbti_rights_eng"
+    GUIDE_SOCIAL_RIGHTS_ENG = "guide_social_rights_eng"
+    GUIDE_TERRORISM_ENG = "guide_terrorism_eng"
+
+
+citations_df = pd.read_csv("data/sentences_with_citations_usable.csv")
+
+
+def is_all_usable_paragraph(i: int, guide: Guide):
+    paragraph_df = citations_df[
+        (citations_df["paragraph"] == i) & (citations_df["guide_id"] == guide.value)
+    ]
+    return paragraph_df["usable"].all()
+
+
+def has_only_valid_citations(sentences: list[str]):
+    for sentence in sentences:
+        match = process.extractOne(
+            sentence, citations_df["sentence"], scorer=fuzz.partial_ratio
+        )
+        find_sentence_df = citations_df[citations_df["sentence"] == match[0]]
+        if find_sentence_df.empty:
+            print(f"Sentence not found in the citations_df: {sentence}")
+            return False
+        usable = find_sentence_df["usable"].values[0]
+        if not usable:
+            return False
+    return True
+
+
+def get_sentences(guide: Guide, paragraphs: list[int]):
+    sentences = []
+    for pn in paragraphs:
+        paragraph_df = citations_df[
+            (citations_df["paragraph"] == pn)
+            & (citations_df["guide_id"] == guide.value)
+        ]
+        sentences.extend(paragraph_df["sentence"].tolist())
+    return sentences
+
+
 QG_WITH_SEARCH_1 = """
 Case law paragraphs: 
 {paragraphs}
 
 Task:
 Define a single challenging legal question that can be answered with the given case law paragraphs.
-Reuse the language from the case law in the question.
+Reuse the language from the case law in the question. 
+Make sure the question is general and does NOT mention specific cases. 
 
 Question: 
 """
@@ -25,6 +118,7 @@ QG_LEGAL_1_1 = """
 Your objective is to develop educational and challenging questions for lawyers working with ECHR case law and for judges who want to draft judgments based on ECHR case law.
 Each question should be based on the provided paragraphs from the ECHR case law guides.
 When formulating a question reuse the language from the ECHR case law and match legal doctrines to specific facts. 
+Make sure the question is general and does NOT mention specific cases. 
 Emphasize the patterns that link facts to specific legal doctrines.
 
 Doctrines and facts: 
@@ -67,6 +161,7 @@ QG_LEGAL_2_1 = """
 Your objective is to develop educational and challenging questions for lawyers working with ECHR case law and for judges who want to draft judgments based on ECHR case law.
 Each question should be based on the provided paragraphs from the ECHR case law guides.
 When formulating a question reuse the language from the ECHR case law and match legal doctrines to specific facts.
+Make sure the question is general and does NOT mention specific cases. 
 Emphasize the patterns that link facts to specific legal doctrines.
 
 Doctrines and facts: 
@@ -108,9 +203,6 @@ Question:
 {question}
 Answer: 
 """
-
-import re
-from langchain_core.messages import AIMessage
 
 
 def extract_question(message: AIMessage):
@@ -171,11 +263,6 @@ def extract_citations(text: str, allowed: set[int] = set()):
     return all_ints
 
 
-import spacy
-
-nlp = spacy.load("en_core_web_trf")
-
-
 def get_sentences_spacy(text: str):
     doc = nlp(text)
     return [sentence.text for sentence in doc.sents]
@@ -185,51 +272,7 @@ def numbered_string(strings: list[str]):
     return "\n".join(f"[{i+1}]: {s}" for i, s in enumerate(strings))
 
 
-import pandas as pd
-
 guides_df = pd.read_csv("data/echr_case_law_guides_with_openai_embeddings.csv")
-
-from enum import Enum
-
-
-class Guide(Enum):
-    GUIDE_ART_1_ENG = "guide_art_1_eng"
-    GUIDE_ART_2_ENG = "guide_art_2_eng"
-    GUIDE_ART_3_ENG = "guide_art_3_eng"
-    GUIDE_ART_4_ENG = "guide_art_4_eng"
-    GUIDE_ART_5_ENG = "guide_art_5_eng"
-    GUIDE_ART_6_CIVIL_ENG = "guide_art_6_civil_eng"
-    GUIDE_ART_6_CRIMINAL_ENG = "guide_art_6_criminal_eng"
-    GUIDE_ART_7_ENG = "guide_art_7_eng"
-    GUIDE_ART_8_ENG = "guide_art_8_eng"
-    GUIDE_ART_9_ENG = "guide_art_9_eng"
-    GUIDE_ART_10_ENG = "guide_art_10_eng"
-    GUIDE_ART_11_ENG = "guide_art_11_eng"
-    GUIDE_ART_12_ENG = "guide_art_12_eng"
-    GUIDE_ART_13_ENG = "guide_art_13_eng"
-    GUIDE_ART_14_ART_1_PROTOCOL_12_ENG = "guide_art_14_art_1_protocol_12_eng"
-    GUIDE_ART_15_ENG = "guide_art_15_eng"
-    GUIDE_ART_17_ENG = "guide_art_17_eng"
-    GUIDE_ART_18_ENG = "guide_art_18_eng"
-    ADMISSIBILITY_GUIDE_ENG = "Admissibility_guide_ENG"
-    GUIDE_ART_46_ENG = "guide_art_46_eng"
-    GUIDE_ART_1_PROTOCOL_1_ENG = "guide_art_1_protocol_1_eng"
-    GUIDE_ART_2_PROTOCOL_1_ENG = "guide_art_2_protocol_1_eng"
-    GUIDE_ART_3_PROTOCOL_1_ENG = "guide_art_3_protocol_1_eng"
-    GUIDE_ART_2_PROTOCOL_4_ENG = "guide_art_2_protocol_4_eng"
-    GUIDE_ART_3_PROTOCOL_4_ENG = "guide_art_3_protocol_4_eng"
-    GUIDE_ART_4_PROTOCOL_4_ENG = "guide_art_4_protocol_4_eng"
-    GUIDE_ART_1_PROTOCOL_7_ENG = "guide_art_1_protocol_7_eng"
-    GUIDE_ART_2_PROTOCOL_7_ENG = "guide_art_2_protocol_7_eng"
-    GUIDE_ART_4_PROTOCOL_7_ENG = "guide_art_4_protocol_7_eng"
-    GUIDE_DATA_PROTECTION_ENG = "guide_data_protection_eng"
-    GUIDE_ENVIRONMENT_ENG = "guide_environment_eng"
-    GUIDE_IMMIGRATION_ENG = "guide_immigration_eng"
-    GUIDE_MASS_PROTESTS_ENG = "guide_mass_protests_eng"
-    GUIDE_PRISONERS_RIGHTS_ENG = "guide_prisoners_rights_eng"
-    GUIDE_LGBTI_RIGHTS_ENG = "guide_lgbti_rights_eng"
-    GUIDE_SOCIAL_RIGHTS_ENG = "guide_social_rights_eng"
-    GUIDE_TERRORISM_ENG = "guide_terrorism_eng"
 
 
 def get_guide(guide: Guide):
@@ -257,21 +300,11 @@ def numbered_paragraphs_string(guide: Guide, paragraphs: list[int]):
     return paragraphs_numbered_str
 
 
-def get_sentences(guide: Guide, paragraphs: list[int]):
-    paragraphs_str = get_paragraphs(guide, paragraphs)
-    sentences = get_sentences_spacy(paragraphs_str)
-    return sentences
-
-
 def numbered_sentence_string(guide: Guide, paragraphs: list[int]):
     sentences = get_sentences(guide, paragraphs)
     sentences_with_numbers = "\n".join(f"[{i+1}]: {s}" for i, s in enumerate(sentences))
     return sentences_with_numbers
 
-
-from langchain_openai import OpenAIEmbeddings
-from scipy.spatial.distance import cosine
-import pandas as pd
 
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 
@@ -293,9 +326,6 @@ def get_top_n_similarities(
 
     return df_copy.nlargest(n, "similarity")
 
-
-from langchain_openai import ChatOpenAI
-from langchain.prompts.prompt import PromptTemplate
 
 llm = ChatOpenAI(model="gpt-3.5-turbo-16k")
 
@@ -330,11 +360,16 @@ def question_generation_with_search(
         response.content, set(range(1, len(sentences) + 1))
     )
     chosen_sentences = [sentences[i - 1] for i in cited_sentences_indices]
-    answer = " ".join(chosen_sentences)
-    return question, answer, top_5_and_paragraph_indices
+    if has_only_valid_citations(chosen_sentences):
+        # is it a valid question?
+        if "v." in question or ".?" in question:
+            print(f"Invalid question: {question}")
+            return None, None, None
 
-
-import re
+        answer = json.dumps(chosen_sentences)
+        return question, answer, top_5_and_paragraph_indices
+    print("Invalid citations found in the answer")
+    return None, None, None
 
 
 def get_score(response: str, score: str):
@@ -353,7 +388,7 @@ Potential Answer: {answer}
 You MUST answer each question in full sentences!
 
 The response MUST follow this template:
-Comprehensiveness Analysis: {{Go through the answer and analyze how well it answers the question. Does is cover all angles of the question?}}
+Comprehensiveness Analysis: {{Go through the answer and analyze how well it answers the question. Does is cover all angles of the question? If the question is not a proper question or not a generic question (mentions a specific case), give a score of 1.}}
 Comprehensiveness Score: {{A score from 1 (not comprehensive at all) to 5 (extremely comprehensive)}}
 Conciseness: {{Is there any part in the answer irrelevant / unrelated to the question? If so, what is unneeded?}}
 Conciseness Score: {{A score from 1 (not concise at all) to 5 (extremely concise)}}
@@ -379,7 +414,7 @@ def is_quality_pair(question: str, answer: str):
     return llm_annotation >= 4
 
 
-df = pd.read_csv("data/echr_qa_dataset.csv")
+df = pd.read_csv("data/echr_qa_dataset_v4.csv")
 old_df = df.copy()
 
 
@@ -400,20 +435,28 @@ def is_complete(guide: Guide, paragraphs: list[int]):
 
 
 def get_tasks():
+    print("Getting tasks...")
     tasks = []
     completed_tasks = []
+    invalid_tasks = []
 
     for guide_id in list(Guide):
         num_paragraphs = len(get_guide(guide_id))
-        for i in range(1, num_paragraphs - 2, 2):
+        for i in range(0, num_paragraphs - 3, 2):
             paragraphs = [i + 1, i + 2, i + 3]
             if is_complete(guide_id, paragraphs):
                 completed_tasks.append((guide_id, paragraphs))
+                continue
+
+            all_usable = all([is_all_usable_paragraph(p, guide_id) for p in paragraphs])
+            if not all_usable:
+                invalid_tasks.append((guide_id, paragraphs))
                 continue
             tasks.append((guide_id, paragraphs))
 
     print(f"Completed tasks: {len(completed_tasks)}")
     print(f"Remaining tasks: {len(tasks)}")
+    print(f"Invalid tasks: {len(invalid_tasks)}")
     return tasks
 
 
@@ -422,7 +465,7 @@ def try_generate(guide_id: Guide, paragraphs: list[int]):
         question, answer, pars = question_generation_with_search(
             guide_id, paragraphs, QG_LEGAL_2_1, QG_LEGAL_2_2
         )
-        if is_quality_pair(question, answer):
+        if question and is_quality_pair(question, answer):
             return {
                 "guide": guide_id.value,
                 "paragraphs": pars,
@@ -434,7 +477,7 @@ def try_generate(guide_id: Guide, paragraphs: list[int]):
         question, answer, pars = question_generation_with_search(
             guide_id, paragraphs, QG_LEGAL_1_1, QG_LEGAL_1_2
         )
-        if is_quality_pair(question, answer):
+        if question and is_quality_pair(question, answer):
             return {
                 "guide": guide_id.value,
                 "paragraphs": pars,
@@ -446,7 +489,7 @@ def try_generate(guide_id: Guide, paragraphs: list[int]):
         question, answer, pars = question_generation_with_search(
             guide_id, paragraphs, QG_WITH_SEARCH_1, QG_WITH_SEARCH_2
         )
-        if is_quality_pair(question, answer):
+        if question and is_quality_pair(question, answer):
             return {
                 "guide": guide_id.value,
                 "paragraphs": pars,
@@ -457,10 +500,6 @@ def try_generate(guide_id: Guide, paragraphs: list[int]):
         return {"error": f"No good qa pair found for {guide_id} {paragraphs}"}
     except Exception as e:
         return {"error": str(e)}
-
-
-import concurrent.futures
-import time
 
 
 def main():
@@ -485,7 +524,7 @@ def main():
                     if not result.get("error"):
                         # Append results to DataFrame and save to CSV
                         df = df._append(result, ignore_index=True)
-                        df.to_csv("data/echr_qa_dataset.csv", index=False)
+                        df.to_csv("data/echr_qa_dataset_v4.csv", index=False)
                         print(
                             f"Added qa pair for {result['guide']} {result['paragraphs']}"
                         )
@@ -494,6 +533,7 @@ def main():
             except concurrent.futures.TimeoutError:
                 print("Task exceeded the time limit and was aborted.")
             print(f"Tasks remaining: {len(tasks)}")
+            print(f"Completed tasks: {len(df)}")
 
 
 if __name__ == "__main__":
